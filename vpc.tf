@@ -20,11 +20,6 @@ resource "aws_subnet" "private" {
   cidr_block        = element(var.subnet_private_cidr, count.index)
   vpc_id            = aws_vpc.eks.id
   availability_zone = local.availability_zones[count.index]
-  tags = {
-    Name                                             = "subnet-private-${count.index}-${local.availability_zones[count.index]}"
-    "kubernetes.io/role/internal-elb"                = 1
-    "kubernetes.io/cluster/${var.cluster_full_name}" = "shared"
-  }
 }
 
 resource "aws_route_table" "private" {

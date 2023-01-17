@@ -45,3 +45,7 @@ variable "vpc_endpoints" {
     "ssmmessages" = "Interface",
   }
 }
+
+variable "route53_public_dns" {
+  default = "k8s.dev.aws.gotocloud.io"
+}

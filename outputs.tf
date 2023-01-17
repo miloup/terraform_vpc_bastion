@@ -3,7 +3,7 @@ output "bastion_role_arn" {
 }
 
 output "alb_endpoint" {
-  value = aws_lb.jenkins.dns-name
+  value = aws_lb.jenkins.dns_name
 }
 
 output "vpc_id" {
@@ -23,5 +23,5 @@ output "private_secondary_subnets_id" {
 }
 
 output "bastion_sg_id" {
-  value = aws_instance.bastion.id
+  value = aws_security_group.bastion.id
 }

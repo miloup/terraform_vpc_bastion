@@ -77,11 +77,6 @@ locals {
     systemctl start jenkins
 
   EOT
-
-  bastion_access = templatefile("${path.root}/manifests/eks-access-bastion.yaml", {
-    bastion_role_arn = aws_iam_role.bastion.arn,
-    worker_role_arn  = aws_iam_role.workers.arn
-  })
 }
 
 resource "aws_security_group" "bastion" {
@@ -111,19 +106,9 @@ resource "aws_security_group_rule" "alb_to_bastion_8080" {
   type                     = "ingress"
 }
 
-resource "aws_security_group_rule" "bastion_access_to_api_server" {
-  description              = "Allow cluster control plane to receive communication from the bastion server"
-  from_port                = 443
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.eks_cluster_sg.id
-  source_security_group_id = aws_security_group.bastion.id
-  to_port                  = 443
-  type                     = "ingress"
-}
-
 resource "aws_instance" "bastion" {
   ami                    = "ami-0fe0b2cf0e1f25c8a" # amazon-linux-2
-  instance_type          = "t2.medium"
+  instance_type          = "t3.medium"
   subnet_id              = aws_subnet.private[0].id
   user_data_base64       = base64encode(local.bastion_user_data)
   iam_instance_profile   = aws_iam_instance_profile.bastion.id
@@ -133,8 +118,15 @@ resource "aws_instance" "bastion" {
     Name = "rafik-jump-box"
   }
 
-  depends_on = [aws_route_table_association.private]
+  depends_on = [aws_route.private_to_nat]
 }
+
+# resource "aws_volume_attachment" "jenkins" {
+#   device_name = "/dev/sdf"
+#   # device_name = "/dev/nvme0n1p1"
+#   volume_id   = data.aws_ebs_volume.jenkins.id
+#   instance_id = aws_instance.bastion.id
+# }
 
 resource "aws_security_group" "alb" {
   name        = "alb-rafik"
@@ -145,7 +137,14 @@ resource "aws_security_group" "alb" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["207.45.249.131/32"]
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -170,14 +169,53 @@ resource "aws_lb" "jenkins" {
   enable_deletion_protection = false
 }
 
-resource "aws_lb_listener" "jenkins" {
+resource "aws_lb_listener" "jenkins_80" {
   load_balancer_arn = aws_lb.jenkins.arn
   port              = "80"
   protocol          = "HTTP"
 
   default_action {
-    type             = "forward"
+    type = "redirect"
+
+    redirect {
+      port        = 443
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+
+    }
+    # target_group_arn = aws_lb_target_group.jenkins.arn
+  }
+}
+
+resource "aws_lb_listener" "jenkins_443" {
+  certificate_arn   = aws_acm_certificate.jenkins.arn
+  load_balancer_arn = aws_lb.jenkins.arn
+  port              = "443"
+  protocol          = "HTTPS"
+
+  default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "This endpoint is not authorized or does not exist."
+      status_code  = "404"
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "jenkins" {
+  listener_arn = aws_lb_listener.jenkins_443.arn
+
+  action {
+    type = "forward"
     target_group_arn = aws_lb_target_group.jenkins.arn
+  }
+
+  condition {
+    host_header {
+      values = [aws_route53_record.jenkins.name]
+    }
   }
 }
 
@@ -196,4 +234,34 @@ resource "aws_lb_target_group_attachment" "jenkins" {
   target_group_arn = aws_lb_target_group.jenkins.arn
   target_id        = aws_instance.bastion.id
   port             = 8080
+}
+
+resource "aws_route53_record" "jenkins" {
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = "jenkins.${var.route53_public_dns}"
+  type    = "A"
+  alias {
+    name                   = aws_lb.jenkins.dns_name
+    zone_id                = aws_lb.jenkins.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "cert_validation" {
+  allow_overwrite = true
+  zone_id         = data.aws_route53_zone.main.zone_id
+  name            = tolist(aws_acm_certificate.jenkins.domain_validation_options)[0].resource_record_name
+  records         = [tolist(aws_acm_certificate.jenkins.domain_validation_options)[0].resource_record_value]
+  type            = tolist(aws_acm_certificate.jenkins.domain_validation_options)[0].resource_record_type
+  ttl             = 60
+}
+
+resource "aws_acm_certificate" "jenkins" {
+  domain_name       = "jenkins.${var.route53_public_dns}"
+  validation_method = "DNS"
+}
+
+resource "aws_acm_certificate_validation" "jenkins" {
+  certificate_arn         = aws_acm_certificate.jenkins.arn
+  validation_record_fqdns = [aws_route53_record.cert_validation.fqdn]
 }
